@@ -37,6 +37,11 @@ class Application(Base):
     offer_letter_path = Column(String, nullable=True)
     offer_letter_size = Column(Integer, nullable=True)
     
+    # Offer letter email draft
+    offer_letter_email_draft = Column(Text, nullable=True)
+    offer_letter_email_generated_at = Column(DateTime(timezone=True), nullable=True)
+    offer_letter_email_edited_by_admin = Column(Boolean, default=False)
+    
     # Interview scheduling
     interview_documents_configured_at = Column(DateTime(timezone=True), nullable=True)
     interview_requested_at = Column(DateTime(timezone=True), nullable=True)

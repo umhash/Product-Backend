@@ -43,7 +43,7 @@ async def process_document(
         )
     
     try:
-        # Process document in background
+        # Process document
         response = await rag_service.process_document(
             db=db,
             program_document_id=request.program_document_id,
@@ -72,7 +72,7 @@ async def query_documents(
     current_user: Student = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Query documents using RAG pipeline"""
+    """Query documents using hybrid search"""
     if rag_service is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -80,7 +80,7 @@ async def query_documents(
         )
     
     try:
-        response = await rag_service.query_documents(
+        response = await rag_service.hybrid_search(
             db=db,
             query_request=request,
             student_id=current_user.id
@@ -222,7 +222,7 @@ async def delete_rag_document(
     
     try:
         # Delete embeddings from Qdrant
-        embeddings_deleted = rag_service.delete_document_embeddings(db, rag_document_id)
+        embeddings_deleted = await rag_service.delete_document_embeddings(db, rag_document_id)
         
         # Delete from database (cascades to chunks)
         db.delete(document)

@@ -43,7 +43,8 @@ class RAGDocumentResponse(RAGDocumentBase):
     updated_at: datetime
 
 
-class RAGChunkBase(BaseModel):
+class RAGChunkResponse(BaseModel):
+    """Chunk data retrieved from Qdrant vector database"""
     content: str
     chunk_index: int
     token_count: int
@@ -51,25 +52,16 @@ class RAGChunkBase(BaseModel):
     section_title: Optional[str] = None
     chunk_type: ChunkType = ChunkType.TEXT
     chunk_metadata: Optional[Dict[str, Any]] = None
-
-
-class RAGChunkCreate(RAGChunkBase):
-    rag_document_id: int
-    embedding_vector: List[float]
-    embedding_model: str
-
-
-class RAGChunkResponse(RAGChunkBase):
-    model_config = ConfigDict(from_attributes=True)
-    
-    id: int
-    rag_document_id: int
-    embedding_model: str
-    created_at: datetime
-
-
-class RAGChunkWithSimilarity(RAGChunkResponse):
     similarity_score: float
+    
+    # University-specific metadata
+    program_document_id: int
+    program_id: int
+    university_name: Optional[str] = None
+    program_name: Optional[str] = None
+    program_level: Optional[str] = None
+    field_of_study: Optional[str] = None
+    document_type: Optional[str] = None
 
 
 class RAGProcessingRequest(BaseModel):
@@ -89,16 +81,16 @@ class RAGQueryRequest(BaseModel):
     query: str
     max_chunks: int = Field(default=5, ge=1, le=20)
     similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    program_ids: Optional[List[int]] = None  # Filter by specific programs
 
 
 class RAGQueryResponse(BaseModel):
     query: str
-    chunks: List[RAGChunkWithSimilarity]
+    chunks: List[RAGChunkResponse]
     total_retrieved: int
     embedding_time_ms: float
     retrieval_time_ms: float
     total_time_ms: float
+    search_method: str = "hybrid"  # hybrid, dense, sparse
 
 
 class RAGStatusResponse(BaseModel):

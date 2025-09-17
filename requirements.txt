@@ -18,11 +18,12 @@ passlib[bcrypt]==1.7.4
 # AI/ML Dependencies
 openai>=1.81.0
 
-# RAG Pipeline Dependencies (required for existing RAG service)
-llama-index==0.12.5
-llama-index-embeddings-openai==0.3.1
-llama-index-vector-stores-qdrant==0.8.0
+# Enhanced RAG Pipeline Dependencies (lightweight implementation)
 qdrant-client==1.12.1
-unstructured[pdf]==0.18.14
 tiktoken==0.8.0
-nest-asyncio==1.6.0
+PyPDF2==3.0.1
+
+# Document Processing Dependencies
+python-docx==1.2.0
+pytesseract==0.3.13
+pillow==11.3.0

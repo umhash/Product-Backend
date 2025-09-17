@@ -18,8 +18,10 @@ from app.schemas.application import (
     ApplicationInterviewDocumentResponse, InterviewScheduleRequest,
     InterviewScheduleResponse, InterviewResultRequest, InterviewResultResponse,
     CASUploadResponse, CASDocumentConfigRequest, ApplicationCASDocumentResponse,
-    VisaDocumentConfigRequest, ApplicationVisaDocumentResponse, VisaUploadResponse
+    VisaDocumentConfigRequest, ApplicationVisaDocumentResponse, VisaUploadResponse,
+    OfferLetterEmailGenerateResponse, OfferLetterEmailUpdateRequest, OfferLetterEmailUpdateResponse
 )
+from app.services.offer_letter_email_service import OfferLetterEmailService
 
 router = APIRouter(prefix="/admin/api/applications", tags=["Admin - Applications"])
 
@@ -293,12 +295,17 @@ async def get_application_stats(
 @router.post("/{application_id}/request-offer-letter")
 async def request_offer_letter(
     application_id: int,
+    generate_email: bool = Query(True, description="Generate email draft using LLM"),
     current_user: User = Depends(require_admin_role),
     db: Session = Depends(get_db)
 ):
-    """Admin requests offer letter for application"""
+    """Admin requests offer letter for application with optional email generation"""
     
-    application = db.query(Application).filter(Application.id == application_id).first()
+    application = db.query(Application).options(
+        joinedload(Application.student),
+        joinedload(Application.program),
+        joinedload(Application.documents)
+    ).filter(Application.id == application_id).first()
     
     if not application:
         raise HTTPException(
@@ -316,15 +323,47 @@ async def request_offer_letter(
     application.status = "offer_letter_requested"
     application.offer_letter_requested_at = datetime.utcnow()
     
-    db.commit()
-    db.refresh(application)
-    
-    return {
+    response_data = {
         "message": "Offer letter request submitted successfully",
         "application_id": application.id,
         "status": application.status,
         "requested_at": application.offer_letter_requested_at
     }
+    
+    # Generate email draft if requested
+    if generate_email:
+        try:
+            email_service = OfferLetterEmailService()
+            admin_name = current_user.full_name or "Admissions Team"
+            
+            result = email_service.generate_offer_letter_email(db, application, admin_name)
+            
+            if result.get("success"):
+                # Save the generated email draft
+                email_service.save_email_draft(db, application, result["email_draft"])
+                
+                response_data.update({
+                    "email_generated": True,
+                    "email_draft": result["email_draft"],
+                    "documents_processed": result["documents_processed"],
+                    "generation_time_seconds": result["generation_time_seconds"]
+                })
+            else:
+                response_data.update({
+                    "email_generated": False,
+                    "email_error": result.get("error", "Unknown error occurred")
+                })
+                
+        except Exception as e:
+            response_data.update({
+                "email_generated": False,
+                "email_error": f"Email generation failed: {str(e)}"
+            })
+    else:
+        db.commit()
+        db.refresh(application)
+    
+    return response_data
 
 
 @router.post("/{application_id}/upload-offer-letter", response_model=OfferLetterUploadResponse)
@@ -400,6 +439,134 @@ async def upload_offer_letter(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload offer letter: {str(e)}"
+        )
+
+
+@router.post("/{application_id}/generate-offer-letter-email", response_model=OfferLetterEmailGenerateResponse)
+async def generate_offer_letter_email(
+    application_id: int,
+    current_user: User = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+):
+    """Generate offer letter request email draft using LLM"""
+    
+    application = db.query(Application).options(
+        joinedload(Application.student),
+        joinedload(Application.program),
+        joinedload(Application.documents)
+    ).filter(Application.id == application_id).first()
+    
+    if not application:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found"
+        )
+    
+    try:
+        email_service = OfferLetterEmailService()
+        admin_name = current_user.full_name or "Admissions Team"
+        
+        result = email_service.generate_offer_letter_email(db, application, admin_name)
+        
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=result.get("error", "Failed to generate email")
+            )
+        
+        # Save the generated email draft
+        email_service.save_email_draft(db, application, result["email_draft"])
+        
+        return OfferLetterEmailGenerateResponse(
+            message="Email draft generated successfully",
+            application_id=application.id,
+            email_draft=result["email_draft"],
+            documents_processed=result["documents_processed"],
+            generation_time_seconds=result["generation_time_seconds"],
+            token_usage=result["token_usage"],
+            generated_at=datetime.utcnow()
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate email: {str(e)}"
+        )
+
+
+@router.get("/{application_id}/offer-letter-email-draft")
+async def get_offer_letter_email_draft(
+    application_id: int,
+    current_user: User = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+):
+    """Get stored offer letter email draft"""
+    
+    application = db.query(Application).filter(Application.id == application_id).first()
+    
+    if not application:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found"
+        )
+    
+    if not application.offer_letter_email_draft:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No email draft found for this application"
+        )
+    
+    return {
+        "application_id": application.id,
+        "email_draft": application.offer_letter_email_draft,
+        "generated_at": application.offer_letter_email_generated_at,
+        "edited_by_admin": application.offer_letter_email_edited_by_admin
+    }
+
+
+@router.put("/{application_id}/offer-letter-email-draft", response_model=OfferLetterEmailUpdateResponse)
+async def update_offer_letter_email_draft(
+    application_id: int,
+    request: OfferLetterEmailUpdateRequest,
+    current_user: User = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+):
+    """Update offer letter email draft"""
+    
+    application = db.query(Application).filter(Application.id == application_id).first()
+    
+    if not application:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found"
+        )
+    
+    try:
+        email_service = OfferLetterEmailService()
+        # Change status only when admin explicitly saves the draft
+        if application.status in ["submitted", "under_review"]:
+            application.status = "offer_letter_requested"
+            application.offer_letter_requested_at = datetime.utcnow()
+        success = email_service.save_email_draft(
+            db, application, request.email_content, is_edited_by_admin=True
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to save email draft"
+            )
+        
+        return OfferLetterEmailUpdateResponse(
+            message="Email draft updated successfully",
+            application_id=application.id,
+            updated_at=datetime.utcnow()
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update email draft: {str(e)}"
         )
 
 

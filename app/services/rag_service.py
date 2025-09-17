@@ -1,51 +1,48 @@
 import os
-import asyncio
 import time
 import json
+import re
 from typing import List, Optional, Dict, Any, Tuple
-from pathlib import Path
 import tiktoken
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, and_
 
-# LlamaIndex imports
-from llama_index.core import Document, Settings
-from llama_index.core.node_parser import SentenceSplitter
-from llama_index.core.extractors import TitleExtractor
-from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.vector_stores.qdrant import QdrantVectorStore
-from llama_index.core import VectorStoreIndex, StorageContext
-
-# Unstructured imports
-from unstructured.partition.pdf import partition_pdf
-from unstructured.documents.elements import Element, Table, Title, Text
+# PDF processing
+import PyPDF2
 
 # Qdrant imports
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams, PointStruct
+from qdrant_client.http.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 from qdrant_client.http.exceptions import UnexpectedResponse
 
+# OpenAI for embeddings
+from openai import OpenAI
+
+# Simple keyword matching implementation
+from collections import Counter
+import math
+
 # Local imports
-from app.models.rag import RAGDocument, RAGChunk, RAGQuery
+from app.models.rag import RAGDocument, RAGQuery
 from app.models.program_document import ProgramDocument
+from app.models.eligibility import UKProgram
 from app.schemas.rag import (
     RAGProcessingStatus, ChunkType, RAGQueryRequest, RAGQueryResponse,
-    RAGChunkWithSimilarity, RAGProcessingResponse
+    RAGChunkResponse, RAGProcessingResponse
 )
 
 
 class RAGService:
+    """RAG service with hybrid search and university-specific processing"""
+    
     def __init__(self):
         # Initialize OpenAI API key
         self.api_key = os.getenv("OPENAI_API_KEY")
         if not self.api_key or self.api_key == "your-openai-api-key-here":
             raise ValueError("OPENAI_API_KEY environment variable is required")
         
-        # Initialize embedding model
-        self.embedding_model = OpenAIEmbedding(
-            model="text-embedding-3-large",
-            api_key=self.api_key
-        )
+        # Initialize OpenAI client
+        self.openai_client = OpenAI(api_key=self.api_key)
         
         # Initialize Qdrant client
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -65,8 +62,13 @@ class RAGService:
         # Initialize tokenizer for token counting
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
         
-        # Configure LlamaIndex settings
-        Settings.embed_model = self.embedding_model
+        # Initialize stop words for keyword search
+        self.stop_words = {
+            'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'her', 'was', 'one',
+            'our', 'had', 'but', 'words', 'use', 'each', 'which', 'she', 'how', 'will', 'other',
+            'this', 'that', 'with', 'have', 'from', 'they', 'been', 'said', 'what', 'were',
+            'there', 'when', 'more', 'some', 'time', 'very', 'into', 'just', 'than', 'only'
+        }
         
     def _initialize_qdrant_collection(self):
         """Initialize Qdrant collection if it doesn't exist"""
@@ -90,144 +92,176 @@ class RAGService:
         """Count tokens in text using tiktoken"""
         return len(self.tokenizer.encode(text))
     
-    def extract_pdf_content(self, file_path: str) -> List[Element]:
-        """Extract content from PDF using Unstructured"""
+    def extract_pdf_content(self, file_path: str) -> List[Dict[str, Any]]:
+        """Extract content from PDF using PyPDF2 with university-specific processing"""
         try:
-            elements = partition_pdf(
-                filename=file_path,
-                strategy="hi_res",  # High resolution for better table extraction
-                infer_table_structure=True,
-                model_name="yolox",  # For table detection
-                extract_images_in_pdf=False,
-                chunking_strategy="by_title",
-                max_characters=2000,
-                combine_text_under_n_chars=500,
-            )
-            return elements
+            chunks = []
+            
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                
+                for page_num, page in enumerate(pdf_reader.pages, 1):
+                    # Extract text from page
+                    text = page.extract_text()
+                    
+                    if text.strip():
+                        # Clean and normalize text
+                        text = self._clean_text(text)
+                        
+                        # Detect section type for university documents
+                        section_info = self._detect_section_type(text)
+                        
+                        # Split into meaningful chunks based on content
+                        page_chunks = self._create_university_chunks(
+                            text, page_num, section_info
+                        )
+                        
+                        chunks.extend(page_chunks)
+            
+            return chunks
+            
         except Exception as e:
             raise Exception(f"Failed to extract PDF content: {str(e)}")
     
-    def process_elements_to_chunks(
+    def _clean_text(self, text: str) -> str:
+        """Clean and normalize extracted text"""
+        # Remove excessive whitespace
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Remove page numbers and headers/footers patterns
+        text = re.sub(r'\n\s*\d+\s*\n', '\n', text)
+        
+        # Fix common PDF extraction issues
+        text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+        
+        return text.strip()
+    
+    def _detect_section_type(self, text: str) -> Dict[str, Any]:
+        """Detect section type for university documents"""
+        text_lower = text.lower()
+        
+        section_keywords = {
+            "admission": ["admission", "entry requirement", "application", "qualification"],
+            "fees": ["fee", "tuition", "cost", "payment", "scholarship"],
+            "curriculum": ["course", "module", "syllabus", "curriculum", "program structure"],
+            "accommodation": ["accommodation", "housing", "residence", "dormitory"],
+            "career": ["career", "employment", "graduate", "job", "placement"],
+            "about": ["about", "overview", "introduction", "university"],
+        }
+        
+        detected_sections = []
+        for section, keywords in section_keywords.items():
+            if any(keyword in text_lower for keyword in keywords):
+                detected_sections.append(section)
+        
+        return {
+            "primary_section": detected_sections[0] if detected_sections else "general",
+            "all_sections": detected_sections,
+            "document_type": "prospectus"  # Default for university documents
+        }
+    
+    def _create_university_chunks(
         self, 
-        elements: List[Element], 
-        chunk_size: int = 1024, 
+        text: str, 
+        page_number: int, 
+        section_info: Dict[str, Any],
+        chunk_size: int = 1024,
         chunk_overlap: int = 200
     ) -> List[Dict[str, Any]]:
-        """Process extracted elements into chunks with metadata"""
+        """Create chunks with university-specific logic"""
         chunks = []
-        current_page = 1
-        current_section = None
         
-        # Initialize sentence splitter for text elements
-        splitter = SentenceSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap
-        )
+        # Split by paragraphs first
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
         
-        for element in elements:
-            # Extract metadata
-            page_number = getattr(element.metadata, 'page_number', current_page)
-            if page_number:
-                current_page = page_number
-            
-            # Handle different element types
-            if isinstance(element, Title):
-                current_section = element.text
-                chunk_type = ChunkType.HEADER
-                content = element.text
-                
-                # Don't split titles, keep as single chunks
-                chunks.append({
-                    'content': content,
-                    'page_number': page_number,
-                    'section_title': current_section,
-                    'chunk_type': chunk_type.value,
-                    'chunk_metadata': {
-                        'element_type': 'title',
-                        'coordinates': getattr(element.metadata, 'coordinates', None)
-                    }
-                })
-                
-            elif isinstance(element, Table):
-                chunk_type = ChunkType.TABLE
-                # Convert table to markdown format
-                content = self._table_to_markdown(element)
-                
-                # Split large tables if needed
-                if self.count_tokens(content) > chunk_size:
-                    sub_chunks = splitter.split_text(content)
-                    for i, sub_chunk in enumerate(sub_chunks):
-                        chunks.append({
-                            'content': sub_chunk,
-                            'page_number': page_number,
-                            'section_title': current_section,
-                            'chunk_type': chunk_type.value,
-                            'chunk_metadata': {
-                                'element_type': 'table',
-                                'table_part': i + 1,
-                                'total_parts': len(sub_chunks),
-                                'coordinates': getattr(element.metadata, 'coordinates', None)
-                            }
-                        })
-                else:
-                    chunks.append({
-                        'content': content,
-                        'page_number': page_number,
-                        'section_title': current_section,
-                        'chunk_type': chunk_type.value,
-                        'chunk_metadata': {
-                            'element_type': 'table',
-                            'coordinates': getattr(element.metadata, 'coordinates', None)
-                        }
-                    })
+        current_chunk = ""
+        chunk_index = 0
+        
+        for paragraph in paragraphs:
+            # Check if adding this paragraph exceeds chunk size
+            if self.count_tokens(current_chunk + " " + paragraph) > chunk_size:
+                if current_chunk:
+                    # Create chunk from current content
+                    chunks.append(self._create_chunk_dict(
+                        current_chunk,
+                        chunk_index,
+                        page_number,
+                        section_info
+                    ))
+                    chunk_index += 1
                     
-            elif isinstance(element, Text):
-                chunk_type = ChunkType.TEXT
-                content = element.text
-                
-                # Split text into smaller chunks
-                if self.count_tokens(content) > chunk_size:
-                    sub_chunks = splitter.split_text(content)
-                    for i, sub_chunk in enumerate(sub_chunks):
-                        chunks.append({
-                            'content': sub_chunk,
-                            'page_number': page_number,
-                            'section_title': current_section,
-                            'chunk_type': chunk_type.value,
-                            'chunk_metadata': {
-                                'element_type': 'text',
-                                'text_part': i + 1,
-                                'total_parts': len(sub_chunks),
-                                'coordinates': getattr(element.metadata, 'coordinates', None)
-                            }
-                        })
+                    # Start new chunk with overlap
+                    if chunk_overlap > 0:
+                        overlap_text = current_chunk[-chunk_overlap:]
+                        current_chunk = overlap_text + " " + paragraph
+                    else:
+                        current_chunk = paragraph
                 else:
-                    chunks.append({
-                        'content': content,
-                        'page_number': page_number,
-                        'section_title': current_section,
-                        'chunk_type': chunk_type.value,
-                        'chunk_metadata': {
-                            'element_type': 'text',
-                            'coordinates': getattr(element.metadata, 'coordinates', None)
-                        }
-                    })
+                    current_chunk = paragraph
+            else:
+                current_chunk += " " + paragraph if current_chunk else paragraph
+        
+        # Add final chunk
+        if current_chunk:
+            chunks.append(self._create_chunk_dict(
+                current_chunk,
+                chunk_index,
+                page_number,
+                section_info
+            ))
         
         return chunks
     
-    def _table_to_markdown(self, table_element: Table) -> str:
-        """Convert table element to markdown format"""
+    def _create_chunk_dict(
+        self,
+        content: str,
+        chunk_index: int,
+        page_number: int,
+        section_info: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Create chunk dictionary with metadata"""
+        # Extract keywords for hybrid search
+        keywords = self._extract_keywords(content)
+        
+        return {
+            "content": content.strip(),
+            "chunk_index": chunk_index,
+            "page_number": page_number,
+            "token_count": self.count_tokens(content),
+            "section_title": section_info.get("primary_section", "general"),
+            "chunk_type": ChunkType.TEXT.value,
+            "keywords": keywords,
+            "section_metadata": section_info,
+            "chunk_metadata": {
+                "content_length": len(content),
+                "keyword_count": len(keywords)
+            }
+        }
+    
+    def _extract_keywords(self, text: str) -> List[str]:
+        """Extract keywords from text for hybrid search"""
+        # Simple keyword extraction - can be improved with NLP
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+        
+        # Remove common stop words and get unique keywords
+        stop_words = {
+            'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'her', 'was', 'one', 
+            'our', 'had', 'but', 'words', 'use', 'each', 'which', 'she', 'how', 'will', 'other'
+        }
+        
+        keywords = [word for word in set(words) if word not in stop_words and len(word) > 3]
+        return keywords[:20]  # Limit to top 20 keywords
+    
+    async def generate_embedding(self, text: str) -> List[float]:
+        """Generate embedding using OpenAI API"""
         try:
-            # Try to get table as HTML first
-            if hasattr(table_element, 'metadata') and hasattr(table_element.metadata, 'text_as_html'):
-                html_content = table_element.metadata.text_as_html
-                # Simple HTML to markdown conversion for tables
-                # This is a basic implementation - could be enhanced
-                return f"**Table:**\n\n{table_element.text}\n\n"
-            else:
-                return f"**Table:**\n\n{table_element.text}\n\n"
-        except Exception:
-            return f"**Table:**\n\n{table_element.text}\n\n"
+            response = self.openai_client.embeddings.create(
+                model="text-embedding-3-large",
+                input=text
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            raise Exception(f"Failed to generate embedding: {str(e)}")
     
     async def process_document(
         self, 
@@ -246,6 +280,11 @@ class RAGService:
         
         if not program_doc:
             raise ValueError("Program document not found")
+        
+        # Get program details for metadata
+        program = db.query(UKProgram).filter(
+            UKProgram.id == program_doc.program_id
+        ).first()
         
         # Check if already processed
         existing_rag_doc = db.query(RAGDocument).filter(
@@ -269,8 +308,8 @@ class RAGService:
         # Create or update RAG document record
         if existing_rag_doc and force_reprocess:
             rag_doc = existing_rag_doc
-            # Delete existing chunks
-            db.query(RAGChunk).filter(RAGChunk.rag_document_id == rag_doc.id).delete()
+            # Delete existing embeddings from Qdrant
+            await self._delete_document_embeddings(program_document_id)
         else:
             rag_doc = RAGDocument(
                 program_document_id=program_document_id,
@@ -288,60 +327,49 @@ class RAGService:
         
         try:
             # Extract content from PDF
-            elements = self.extract_pdf_content(program_doc.file_path)
+            chunks_data = self.extract_pdf_content(program_doc.file_path)
             
-            # Process elements into chunks
-            chunks_data = self.process_elements_to_chunks(
-                elements, chunk_size, chunk_overlap
-            )
-            
-            # Generate embeddings and store chunks
+            # Generate embeddings and store in Qdrant
             total_tokens = 0
-            stored_chunks = []
+            points = []
             
             for i, chunk_data in enumerate(chunks_data):
                 content = chunk_data['content']
-                token_count = self.count_tokens(content)
+                token_count = chunk_data['token_count']
                 total_tokens += token_count
                 
                 # Generate embedding
-                embedding = await self.embedding_model.aget_text_embedding(content)
+                embedding = await self.generate_embedding(content)
                 
-                # Create chunk record
-                chunk = RAGChunk(
-                    rag_document_id=rag_doc.id,
-                    content=content,
-                    chunk_index=i,
-                    token_count=token_count,
-                    page_number=chunk_data.get('page_number'),
-                    section_title=chunk_data.get('section_title'),
-                    embedding_vector=embedding,
-                    embedding_model="text-embedding-3-large",
-                    chunk_type=chunk_data.get('chunk_type', ChunkType.TEXT.value),
-                    chunk_metadata=chunk_data.get('chunk_metadata')
-                )
-                
-                db.add(chunk)
-                stored_chunks.append(chunk)
-            
-            # Commit chunks to database
-            db.commit()
-            
-            # Store embeddings in Qdrant
-            points = []
-            for chunk in stored_chunks:
+                # Create point for Qdrant with rich payload
+                point_id = f"{program_document_id}_{i}"
                 points.append(PointStruct(
-                    id=chunk.id,
-                    vector=chunk.embedding_vector,
+                    id=point_id,
+                    vector=embedding,
                     payload={
-                        "content": chunk.content,
+                        # Content and basic info
+                        "content": content,
+                        "chunk_index": i,
+                        "token_count": token_count,
+                        "page_number": chunk_data.get('page_number'),
+                        "section_title": chunk_data.get('section_title'),
+                        "chunk_type": chunk_data.get('chunk_type', ChunkType.TEXT.value),
+                        
+                        # Document association
                         "program_document_id": program_document_id,
                         "program_id": program_doc.program_id,
-                        "chunk_index": chunk.chunk_index,
-                        "page_number": chunk.page_number,
-                        "section_title": chunk.section_title,
-                        "chunk_type": chunk.chunk_type,
-                        "token_count": chunk.token_count
+                        
+                        # University metadata
+                        "university_name": program.university_name if program else None,
+                        "program_name": program.program_name if program else None,
+                        "program_level": program.program_level if program else None,
+                        "field_of_study": program.field_of_study if program else None,
+                        "document_type": chunk_data.get('section_metadata', {}).get('document_type', 'prospectus'),
+                        
+                        # Search enhancement
+                        "keywords": chunk_data.get('keywords', []),
+                        "section_metadata": chunk_data.get('section_metadata', {}),
+                        "chunk_metadata": chunk_data.get('chunk_metadata', {})
                     }
                 ))
             
@@ -355,14 +383,14 @@ class RAGService:
             # Update RAG document status
             rag_doc.status = RAGProcessingStatus.COMPLETED
             rag_doc.processing_completed_at = db.execute("SELECT NOW()").scalar()
-            rag_doc.total_chunks = len(stored_chunks)
+            rag_doc.total_chunks = len(chunks_data)
             rag_doc.total_tokens = total_tokens
             db.commit()
             
             return RAGProcessingResponse(
                 rag_document_id=rag_doc.id,
                 status=RAGProcessingStatus.COMPLETED,
-                message=f"Document processed successfully. Created {len(stored_chunks)} chunks with {total_tokens} tokens."
+                message=f"Document processed successfully. Created {len(chunks_data)} chunks with {total_tokens} tokens."
             )
             
         except Exception as e:
@@ -377,74 +405,90 @@ class RAGService:
                 message=f"Document processing failed: {str(e)}"
             )
     
-    async def query_documents(
+    async def _delete_document_embeddings(self, program_document_id: int) -> bool:
+        """Delete document embeddings from Qdrant"""
+        try:
+            # Delete all points with matching program_document_id
+            self.qdrant_client.delete(
+                collection_name=self.collection_name,
+                points_selector=Filter(
+                    must=[
+                        FieldCondition(
+                            key="program_document_id",
+                            match=MatchValue(value=program_document_id)
+                        )
+                    ]
+                )
+            )
+            return True
+        except Exception as e:
+            print(f"Error deleting embeddings from Qdrant: {e}")
+            return False
+    
+    async def hybrid_search(
         self, 
         db: Session,
         query_request: RAGQueryRequest,
         student_id: Optional[int] = None,
         chat_session_id: Optional[int] = None
     ) -> RAGQueryResponse:
-        """Query documents using RAG pipeline"""
+        """Hybrid search with dense vector search and keyword matching"""
         
         start_time = time.time()
         
-        # Generate query embedding
+        # Generate query embedding for dense search
         embedding_start = time.time()
-        query_embedding = await self.embedding_model.aget_text_embedding(query_request.query)
+        query_embedding = await self.generate_embedding(query_request.query)
         embedding_time = (time.time() - embedding_start) * 1000
         
-        # Search in Qdrant
+        # Perform hybrid search
         retrieval_start = time.time()
         
-        # Build filter for specific programs if provided
-        query_filter = None
-        if query_request.program_ids:
-            query_filter = {
-                "must": [
-                    {
-                        "key": "program_id",
-                        "match": {"any": query_request.program_ids}
-                    }
-                ]
-            }
-        
-        search_results = self.qdrant_client.search(
+        # Dense vector search
+        dense_results = self.qdrant_client.search(
             collection_name=self.collection_name,
             query_vector=query_embedding,
-            query_filter=query_filter,
-            limit=query_request.max_chunks,
-            score_threshold=query_request.similarity_threshold
+            limit=query_request.max_chunks * 2,  # Get more for fusion
+            score_threshold=query_request.similarity_threshold,
+            with_payload=True
+        )
+        
+        # Keyword-based sparse search
+        sparse_results = self._simple_keyword_search(
+            query_request.query,
+            limit=query_request.max_chunks * 2
+        )
+        
+        # Fuse results using Reciprocal Rank Fusion
+        fused_results = self._fuse_search_results(
+            dense_results, 
+            sparse_results, 
+            query_request.max_chunks
         )
         
         retrieval_time = (time.time() - retrieval_start) * 1000
         
-        # Get chunk details from database
-        chunk_ids = [result.id for result in search_results]
-        chunks = db.query(RAGChunk).filter(RAGChunk.id.in_(chunk_ids)).all()
-        
-        # Create response with similarity scores
-        chunks_with_similarity = []
-        score_map = {result.id: result.score for result in search_results}
-        
-        for chunk in chunks:
-            chunk_response = RAGChunkWithSimilarity(
-                id=chunk.id,
-                rag_document_id=chunk.rag_document_id,
-                content=chunk.content,
-                chunk_index=chunk.chunk_index,
-                token_count=chunk.token_count,
-                page_number=chunk.page_number,
-                section_title=chunk.section_title,
-                chunk_type=chunk.chunk_type,
-                chunk_metadata=chunk.chunk_metadata,
-                embedding_model=chunk.embedding_model,
-                created_at=chunk.created_at,
-                similarity_score=score_map.get(chunk.id, 0.0)
-            )
-            chunks_with_similarity.append(chunk_response)
-        
-        # Sort by similarity score (descending)
-        chunks_with_similarity.sort(key=lambda x: x.similarity_score, reverse=True)
+        # Convert to response format
+        chunks_response = []
+        for result in fused_results:
+            payload = result.get('payload', {})
+            chunks_response.append(RAGChunkResponse(
+                content=payload.get('content', ''),
+                chunk_index=payload.get('chunk_index', 0),
+                token_count=payload.get('token_count', 0),
+                page_number=payload.get('page_number'),
+                section_title=payload.get('section_title'),
+                chunk_type=payload.get('chunk_type', ChunkType.TEXT.value),
+                chunk_metadata=payload.get('chunk_metadata', {}),
+                similarity_score=result.get('score', 0.0),
+                program_document_id=payload.get('program_document_id', 0),
+                program_id=payload.get('program_id', 0),
+                university_name=payload.get('university_name'),
+                program_name=payload.get('program_name'),
+                program_level=payload.get('program_level'),
+                field_of_study=payload.get('field_of_study'),
+                document_type=payload.get('document_type')
+            ))
         
         total_time = (time.time() - start_time) * 1000
         
@@ -455,9 +499,9 @@ class RAGService:
                 chat_session_id=chat_session_id,
                 query_text=query_request.query,
                 query_embedding=query_embedding,
-                retrieved_chunks=[{"chunk_id": chunk.id, "score": chunk.similarity_score} for chunk in chunks_with_similarity],
-                total_retrieved=len(chunks_with_similarity),
-                max_similarity_score=chunks_with_similarity[0].similarity_score if chunks_with_similarity else 0.0,
+                retrieved_chunks=[{"chunk_id": i, "score": chunk.similarity_score} for i, chunk in enumerate(chunks_response)],
+                total_retrieved=len(chunks_response),
+                max_similarity_score=chunks_response[0].similarity_score if chunks_response else 0.0,
                 embedding_time_ms=embedding_time,
                 retrieval_time_ms=retrieval_time,
                 total_time_ms=total_time
@@ -467,12 +511,171 @@ class RAGService:
         
         return RAGQueryResponse(
             query=query_request.query,
-            chunks=chunks_with_similarity,
-            total_retrieved=len(chunks_with_similarity),
+            chunks=chunks_response,
+            total_retrieved=len(chunks_response),
             embedding_time_ms=embedding_time,
             retrieval_time_ms=retrieval_time,
-            total_time_ms=total_time
+            total_time_ms=total_time,
+            search_method="hybrid"
         )
+    
+    
+    def _simple_keyword_search(
+        self, 
+        query: str, 
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Perform keyword-based search using simple TF-IDF similarity"""
+        try:
+            # Get all documents from Qdrant for keyword matching
+            scroll_result = self.qdrant_client.scroll(
+                collection_name=self.collection_name,
+                limit=1000,  # Adjust based on your dataset size
+                with_payload=True
+            )
+            
+            documents = scroll_result[0]
+            if not documents:
+                return []
+            
+            # Extract content and keywords for matching
+            contents = []
+            for doc in documents:
+                content = doc.payload.get('content', '')
+                keywords = doc.payload.get('keywords', [])
+                # Combine content and keywords for matching
+                combined_text = content + ' ' + ' '.join(keywords)
+                contents.append(combined_text)
+            
+            # Simple keyword matching using TF-IDF-like scoring
+            query_terms = self._extract_search_terms(query)
+            if not query_terms:
+                return []
+            
+            # Calculate document frequencies
+            doc_freq = {}
+            for content in contents:
+                content_terms = set(self._extract_search_terms(content))
+                for term in query_terms:
+                    if term in content_terms:
+                        doc_freq[term] = doc_freq.get(term, 0) + 1
+            
+            # Calculate scores for each document
+            scores = []
+            for i, content in enumerate(contents):
+                content_terms = self._extract_search_terms(content)
+                content_term_count = Counter(content_terms)
+                
+                score = 0
+                for term in query_terms:
+                    if term in content_term_count:
+                        # TF-IDF-like scoring
+                        tf = content_term_count[term] / len(content_terms) if content_terms else 0
+                        idf = math.log(len(contents) / (doc_freq.get(term, 1)))
+                        score += tf * idf
+                
+                scores.append((i, score))
+            
+            # Sort by score and return top results
+            scores.sort(key=lambda x: x[1], reverse=True)
+            
+            results = []
+            for doc_idx, score in scores[:limit]:
+                if score > 0.01:  # Minimum similarity threshold
+                    results.append({
+                        'payload': documents[doc_idx].payload,
+                        'score': min(score, 1.0),  # Cap at 1.0 for consistency
+                        'search_type': 'keyword'
+                    })
+            
+            return results
+            
+        except Exception as e:
+            print(f"Keyword search error: {e}")
+            return []
+    
+    def _extract_search_terms(self, text: str) -> List[str]:
+        """Extract search terms from text"""
+        if not text:
+            return []
+        
+        # Simple tokenization and cleaning
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+        
+        # Remove stop words and get unique terms
+        terms = [word for word in words if word not in self.stop_words and len(word) > 2]
+        return terms
+    
+    def _fuse_search_results(
+        self, 
+        dense_results: List[Any], 
+        sparse_results: List[Dict[str, Any]], 
+        final_limit: int
+    ) -> List[Dict[str, Any]]:
+        """Fuse dense and sparse search results using Reciprocal Rank Fusion"""
+        
+        # Convert dense results to common format
+        dense_formatted = []
+        for i, result in enumerate(dense_results):
+            dense_formatted.append({
+                'payload': result.payload,
+                'score': result.score,
+                'dense_rank': i + 1,
+                'search_type': 'dense'
+            })
+        
+        # Add sparse rank to sparse results
+        for i, result in enumerate(sparse_results):
+            result['sparse_rank'] = i + 1
+        
+        # Create combined results dictionary
+        combined_results = {}
+        
+        # Add dense results
+        for result in dense_formatted:
+            content = result['payload'].get('content', '')
+            if content not in combined_results:
+                combined_results[content] = result
+                combined_results[content]['dense_rank'] = result['dense_rank']
+                combined_results[content]['sparse_rank'] = float('inf')
+        
+        # Add sparse results
+        for result in sparse_results:
+            content = result['payload'].get('content', '')
+            if content in combined_results:
+                combined_results[content]['sparse_rank'] = result['sparse_rank']
+                # Boost score for items found in both searches
+                combined_results[content]['score'] = max(
+                    combined_results[content]['score'],
+                    result['score']
+                ) * 1.2
+            else:
+                combined_results[content] = result
+                combined_results[content]['dense_rank'] = float('inf')
+                combined_results[content]['sparse_rank'] = result['sparse_rank']
+        
+        # Calculate RRF scores
+        k = 60  # RRF parameter
+        for result in combined_results.values():
+            dense_rank = result.get('dense_rank', float('inf'))
+            sparse_rank = result.get('sparse_rank', float('inf'))
+            
+            rrf_score = 0
+            if dense_rank != float('inf'):
+                rrf_score += 1 / (k + dense_rank)
+            if sparse_rank != float('inf'):
+                rrf_score += 1 / (k + sparse_rank)
+            
+            result['rrf_score'] = rrf_score
+        
+        # Sort by RRF score and return top results
+        final_results = sorted(
+            combined_results.values(),
+            key=lambda x: x['rrf_score'],
+            reverse=True
+        )
+        
+        return final_results[:final_limit]
     
     def get_processing_status(self, db: Session) -> Dict[str, Any]:
         """Get overall RAG processing status"""
@@ -499,26 +702,21 @@ class RAGService:
             "total_tokens": total_tokens
         }
     
-    def delete_document_embeddings(self, db: Session, rag_document_id: int) -> bool:
+    async def delete_document_embeddings(self, db: Session, rag_document_id: int) -> bool:
         """Delete document embeddings from Qdrant"""
         try:
-            # Get chunk IDs to delete from Qdrant
-            chunks = db.query(RAGChunk).filter(
-                RAGChunk.rag_document_id == rag_document_id
-            ).all()
+            # Get program_document_id from RAG document
+            rag_doc = db.query(RAGDocument).filter(
+                RAGDocument.id == rag_document_id
+            ).first()
             
-            chunk_ids = [chunk.id for chunk in chunks]
+            if not rag_doc:
+                return False
             
-            if chunk_ids:
-                # Delete from Qdrant
-                self.qdrant_client.delete(
-                    collection_name=self.collection_name,
-                    points_selector=chunk_ids
-                )
+            return await self._delete_document_embeddings(rag_doc.program_document_id)
             
-            return True
         except Exception as e:
-            print(f"Error deleting embeddings from Qdrant: {e}")
+            print(f"Error deleting embeddings: {e}")
             return False
 
 

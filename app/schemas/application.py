@@ -70,6 +70,10 @@ class ApplicationResponse(ApplicationBase):
     offer_letter_received_at: Optional[datetime] = None
     offer_letter_filename: Optional[str] = None
     offer_letter_original_filename: Optional[str] = None
+    # Offer letter email draft fields
+    offer_letter_email_draft: Optional[str] = None
+    offer_letter_email_generated_at: Optional[datetime] = None
+    offer_letter_email_edited_by_admin: Optional[bool] = None
     # Interview fields
     interview_documents_configured_at: Optional[datetime] = None
     interview_requested_at: Optional[datetime] = None
@@ -303,3 +307,24 @@ class CASUploadResponse(BaseModel):
     cas_original_filename: str
     cas_size: int
     uploaded_at: datetime
+
+
+# Offer Letter Email Schemas
+class OfferLetterEmailGenerateResponse(BaseModel):
+    message: str
+    application_id: int
+    email_draft: str
+    documents_processed: List[str]
+    generation_time_seconds: float
+    token_usage: int
+    generated_at: datetime
+
+
+class OfferLetterEmailUpdateRequest(BaseModel):
+    email_content: str
+
+
+class OfferLetterEmailUpdateResponse(BaseModel):
+    message: str
+    application_id: int
+    updated_at: datetime

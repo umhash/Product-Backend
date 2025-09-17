@@ -90,7 +90,7 @@ YOUR ROLE IN PRACTICE:
                 similarity_threshold=0.7
             )
             
-            rag_response = await rag_service.query_documents(
+            rag_response = await rag_service.hybrid_search(
                 db=db,
                 query_request=rag_request,
                 student_id=student_id

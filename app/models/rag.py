@@ -31,43 +31,12 @@ class RAGDocument(Base):
     
     # Relationships
     program_document = relationship("ProgramDocument", back_populates="rag_document")
-    chunks = relationship("RAGChunk", back_populates="rag_document", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<RAGDocument(id={self.id}, status='{self.status}', chunks={self.total_chunks})>"
 
 
-class RAGChunk(Base):
-    """Individual chunks of processed documents with embeddings"""
-    __tablename__ = "rag_chunks"
-
-    id = Column(Integer, primary_key=True, index=True)
-    rag_document_id = Column(Integer, ForeignKey("rag_documents.id", ondelete="CASCADE"), nullable=False)
-    
-    # Chunk content and metadata
-    content = Column(Text, nullable=False)
-    chunk_index = Column(Integer, nullable=False)  # Order within document
-    token_count = Column(Integer, nullable=False)
-    
-    # Source information
-    page_number = Column(Integer, nullable=True)
-    section_title = Column(String, nullable=True)
-    
-    # Embedding information
-    embedding_vector = Column(JSON, nullable=True)  # Store as JSON array
-    embedding_model = Column(String, nullable=False)
-    
-    # Chunk type and metadata
-    chunk_type = Column(String, default="text")  # text, table, header, etc.
-    chunk_metadata = Column(JSON, nullable=True)  # Additional metadata as JSON
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    # Relationships
-    rag_document = relationship("RAGDocument", back_populates="chunks")
-    
-    def __repr__(self):
-        return f"<RAGChunk(id={self.id}, chunk_index={self.chunk_index}, tokens={self.token_count})>"
+# RAGChunk table removed - all chunk data now stored in Qdrant vector database
 
 
 class RAGQuery(Base):

@@ -1,7 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+import csv
+import io
+import json
 from app.database import get_db
 from app.models import User, UKProgram, ProgramDocument
 from app.schemas.program import (
@@ -111,7 +115,7 @@ async def create_program(
     return ProgramResponse.model_validate(db_program)
 
 
-@router.get("/{program_id}", response_model=ProgramResponse)
+@router.get("/{program_id:int}", response_model=ProgramResponse)
 async def get_program(
     program_id: int,
     db: Session = Depends(get_db),
@@ -129,7 +133,7 @@ async def get_program(
     return ProgramResponse.model_validate(program)
 
 
-@router.put("/{program_id}", response_model=ProgramResponse)
+@router.put("/{program_id:int}", response_model=ProgramResponse)
 async def update_program(
     program_id: int,
     program_update: ProgramUpdate,
@@ -156,7 +160,7 @@ async def update_program(
     return ProgramResponse.model_validate(program)
 
 
-@router.delete("/{program_id}")
+@router.delete("/{program_id:int}")
 async def delete_program(
     program_id: int,
     db: Session = Depends(get_db),
@@ -186,6 +190,208 @@ async def delete_program(
     return {"message": "Program deleted successfully"}
 
 
+@router.get("/csv-template")
+async def download_programs_csv_template(
+    current_user: User = Depends(require_admin_role)
+):
+    """Provide a blank CSV template with column headers for bulk upload."""
+    columns = [
+        "university_name",
+        "program_name",
+        "program_level",
+        "field_of_study",
+        "min_ielts_overall",
+        "min_ielts_components",
+        "min_toefl_overall",
+        "min_pte_overall",
+        "min_gpa_4_scale",
+        "min_percentage",
+        "required_qualification",
+        "tuition_fee_gbp",
+        "living_cost_gbp",
+        "duration_months",
+        "intake_months",
+        "city",
+        "program_description",
+        "is_active",
+    ]
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns)
+    writer.writeheader()
+    buffer.seek(0)
+
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=uk_programs_template.csv"
+        },
+    )
+
+
+def _parse_bool(value: Optional[str], default: bool = True) -> bool:
+    if value is None or str(value).strip() == "":
+        return default
+    val = str(value).strip().lower()
+    if val in {"true", "1", "yes", "y"}:
+        return True
+    if val in {"false", "0", "no", "n"}:
+        return False
+    return default
+
+
+def _parse_float(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "":
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        raise ValueError(f"Invalid float: '{value}'")
+
+
+def _parse_int(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "":
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        raise ValueError(f"Invalid integer: '{value}'")
+
+
+def _parse_int_list(value: Optional[str]) -> Optional[List[int]]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "":
+        return None
+    # Allow JSON array or comma-separated values
+    try:
+        if s.startswith("[") and s.endswith("]"):
+            data = json.loads(s)
+            if not isinstance(data, list):
+                raise ValueError
+            return [int(x) for x in data]
+    except Exception:
+        raise ValueError(f"Invalid JSON array for intake_months: '{value}'")
+
+    parts = [p.strip() for p in s.split(",") if p.strip() != ""]
+    try:
+        return [int(p) for p in parts]
+    except ValueError:
+        raise ValueError(f"Invalid comma-separated integers for intake_months: '{value}'")
+
+
+@router.post("/bulk-upload")
+async def bulk_upload_programs(
+    file: UploadFile = File(..., description="CSV file with uk_programs data"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_role)
+):
+    """Bulk upload programs from a CSV file. Skips duplicates by university+program name.
+
+    Returns a summary with inserted, skipped_duplicates, and row-level errors.
+    """
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please upload a .csv file")
+
+    try:
+        raw = await file.read()
+        text = raw.decode("utf-8-sig")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to read file: {str(e)}")
+
+    reader = csv.DictReader(io.StringIO(text))
+
+    required_columns = {"university_name", "program_name", "program_level", "field_of_study", "city"}
+    provided_columns = set(reader.fieldnames or [])
+    missing = required_columns - provided_columns
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Missing required columns: {', '.join(sorted(missing))}"
+        )
+
+    # Preload existing keys to avoid duplicates and reduce DB roundtrips
+    existing_pairs = set(
+        (u.lower(), p.lower())
+        for (u, p) in db.query(UKProgram.university_name, UKProgram.program_name).all()
+    )
+    seen_in_batch = set()
+
+    inserted = 0
+    skipped = 0
+    errors: List[Dict[str, Any]] = []
+
+    row_index = 1  # header is row 1; first data row will be 2
+    for row in reader:
+        row_index += 1
+        try:
+            # Trim whitespace
+            for k, v in list(row.items()):
+                if isinstance(v, str):
+                    row[k] = v.strip()
+
+            key = (row.get("university_name", "").lower(), row.get("program_name", "").lower())
+            if not key[0] or not key[1]:
+                raise ValueError("university_name and program_name are required")
+
+            if key in existing_pairs or key in seen_in_batch:
+                skipped += 1
+                continue
+
+            data: Dict[str, Any] = {
+                "university_name": row.get("university_name") or "",
+                "program_name": row.get("program_name") or "",
+                "program_level": row.get("program_level") or "",
+                "field_of_study": row.get("field_of_study") or "",
+                "min_ielts_overall": _parse_float(row.get("min_ielts_overall")),
+                "min_ielts_components": _parse_float(row.get("min_ielts_components")),
+                "min_toefl_overall": _parse_float(row.get("min_toefl_overall")),
+                "min_pte_overall": _parse_float(row.get("min_pte_overall")),
+                "min_gpa_4_scale": _parse_float(row.get("min_gpa_4_scale")),
+                "min_percentage": _parse_float(row.get("min_percentage")),
+                "required_qualification": row.get("required_qualification") or None,
+                "tuition_fee_gbp": _parse_float(row.get("tuition_fee_gbp")),
+                "living_cost_gbp": _parse_float(row.get("living_cost_gbp")),
+                "duration_months": _parse_int(row.get("duration_months")),
+                "intake_months": _parse_int_list(row.get("intake_months")),
+                "city": row.get("city") or "",
+                "program_description": row.get("program_description") or None,
+                "is_active": _parse_bool(row.get("is_active"), True),
+            }
+
+            # Basic required validation
+            for req in ["university_name", "program_name", "program_level", "field_of_study", "city"]:
+                if not data[req]:
+                    raise ValueError(f"Missing required field: {req}")
+
+            db.add(UKProgram(**data))
+            seen_in_batch.add(key)
+            inserted += 1
+        except Exception as e:
+            errors.append({"row": row_index, "error": str(e)})
+
+    try:
+        if inserted:
+            db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to save records: {str(e)}")
+
+    return {
+        "inserted": inserted,
+        "skipped_duplicates": skipped,
+        "errors": errors,
+    }
+
+
 async def process_document_for_rag(program_document_id: int, db: Session):
     """Background task to process document for RAG"""
     if rag_service:
@@ -201,7 +407,7 @@ async def process_document_for_rag(program_document_id: int, db: Session):
             print(f"Error processing document {program_document_id} for RAG: {e}")
 
 
-@router.post("/{program_id}/documents", response_model=List[DocumentUploadResponse])
+@router.post("/{program_id:int}/documents", response_model=List[DocumentUploadResponse])
 async def upload_program_documents(
     program_id: int,
     background_tasks: BackgroundTasks,
