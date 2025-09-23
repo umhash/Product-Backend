@@ -15,8 +15,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 from qdrant_client.http.exceptions import UnexpectedResponse
 
-# OpenAI for embeddings
-from openai import OpenAI
+from app.services.llm_providers.factory import create_chat_and_embeddings, get_llm_backend
 
 # Simple keyword matching implementation
 from collections import Counter
@@ -36,13 +35,8 @@ class RAGService:
     """RAG service with hybrid search and university-specific processing"""
     
     def __init__(self):
-        # Initialize OpenAI API key
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        if not self.api_key or self.api_key == "your-openai-api-key-here":
-            raise ValueError("OPENAI_API_KEY environment variable is required")
-        
-        # Initialize OpenAI client
-        self.openai_client = OpenAI(api_key=self.api_key)
+        # Initialize providers (use embeddings provider; chat not needed here)
+        _, self.embeddings = create_chat_and_embeddings()
         
         # Initialize Qdrant client
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -53,8 +47,12 @@ class RAGService:
             api_key=qdrant_api_key
         )
         
-        # Collection name for embeddings
-        self.collection_name = "university_documents"
+        # Collection name for embeddings (separate per backend for dimension compatibility)
+        backend = get_llm_backend()
+        if backend == "local":
+            self.collection_name = "university_documents_bge_m3"
+        else:
+            self.collection_name = "university_documents"
         
         # Initialize collection if it doesn't exist
         self._initialize_qdrant_collection()
@@ -80,7 +78,7 @@ class RAGService:
                 self.qdrant_client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(
-                        size=3072,  # text-embedding-3-large dimension
+                        size=self.embeddings.embedding_dim,
                         distance=Distance.COSINE
                     )
                 )
@@ -253,13 +251,9 @@ class RAGService:
         return keywords[:20]  # Limit to top 20 keywords
     
     async def generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding using OpenAI API"""
+        """Generate embedding using configured provider"""
         try:
-            response = self.openai_client.embeddings.create(
-                model="text-embedding-3-large",
-                input=text
-            )
-            return response.data[0].embedding
+            return self.embeddings.embed([text])[0]
         except Exception as e:
             raise Exception(f"Failed to generate embedding: {str(e)}")
     

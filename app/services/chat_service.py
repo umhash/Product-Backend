@@ -1,24 +1,21 @@
 import os
 from typing import List, Optional
-from openai import OpenAI
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from app.models.chat import ChatSession, ChatMessage
 from app.schemas.chat import ChatRequest, ChatResponse, ChatHistoryResponse, SessionMessagesResponse
 from app.schemas.rag import RAGQueryRequest
 from datetime import datetime
+from app.services.llm_providers.factory import create_chat_and_embeddings
 
 
 class ChatService:
     def __init__(self):
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key or api_key == "your-openai-api-key-here":
-            raise ValueError("OPENAI_API_KEY environment variable is required but not set to a valid API key. Please add your actual OpenAI API key to your .env file.")
-        
+        # Create providers (env-driven; default is OpenAI)
         try:
-            self.client = OpenAI(api_key=api_key)
+            self.chat_llm, _ = create_chat_and_embeddings()
         except Exception as e:
-            raise ValueError(f"Failed to initialize OpenAI client: {str(e)}. Please check your OPENAI_API_KEY in the .env file.")
+            raise ValueError(str(e))
         self.system_prompt = """
 You are an Expert UK University Study Consultant and Student Advisor. 
 Your role is to guide students through the entire process of selecting, applying to, and securing admission at UK universities. 
@@ -144,16 +141,14 @@ YOUR ROLE IN PRACTICE:
     def create_session_title(self, first_message: str) -> str:
         """Generate a title for the chat session based on the first message"""
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+            title = self.chat_llm.generate(
                 messages=[
                     {"role": "system", "content": "Generate a short, descriptive title (max 50 characters) for a student consultation chat based on their first message. Focus on the main topic (e.g., 'Computer Science Programs', 'Visa Requirements', 'Oxford Application Help')."},
                     {"role": "user", "content": first_message}
                 ],
                 max_tokens=20,
-                temperature=0.3
-            )
-            title = response.choices[0].message.content.strip().strip('"')
+                temperature=0.3,
+            ).strip().strip('"')
             return title[:50]  # Ensure max 50 characters
         except Exception:
             # Fallback title
@@ -220,20 +215,17 @@ YOUR ROLE IN PRACTICE:
         if rag_context:
             system_content = f"{self.system_prompt}\n\n{rag_context}"
         
-        # Prepare messages for OpenAI
+        # Prepare messages for LLM
         messages = [{"role": "system", "content": system_content}]
         messages.extend(context_messages)
         
         try:
-            # Get AI response
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            # Get AI response via provider
+            ai_response = self.chat_llm.generate(
                 messages=messages,
                 max_tokens=1500,
-                temperature=0.7
+                temperature=0.7,
             )
-            
-            ai_response = response.choices[0].message.content
             
             # Save AI response
             assistant_message = ChatMessage(

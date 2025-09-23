@@ -17,6 +17,11 @@ passlib[bcrypt]==1.7.4
 
 # AI/ML Dependencies
 openai>=1.81.0
+llama-cpp-python==0.3.6
+huggingface_hub==0.26.2
+sentence-transformers==3.2.1
+torch>=2.2.0
+numpy>=1.26
 
 # Enhanced RAG Pipeline Dependencies (lightweight implementation)
 qdrant-client==1.12.1

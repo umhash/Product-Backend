@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
+import shutil
 
 # Import routers
 from app.api.auth import router as auth_router
@@ -26,6 +27,34 @@ app = FastAPI(
     description="Backend API for StudyCopilot - Your AI-Powered Path to UK Universities",
     version="1.0.0"
 )
+# Startup hook to ensure local models are in repo folder when using local backend
+@app.on_event("startup")
+async def ensure_local_models():
+    backend = os.getenv("LLM_BACKEND", "openai").strip().lower()
+    if backend != "local":
+        return
+    project_root = os.path.abspath(os.path.dirname(__file__))
+    models_root = os.path.join(project_root, "models")
+    # If user requests a fresh download, remove existing models
+    if os.getenv("REFRESH_LOCAL_MODELS", "false").lower() in {"1", "true", "yes"}:
+        if os.path.isdir(models_root):
+            try:
+                shutil.rmtree(models_root)
+            except Exception:
+                pass
+    # Initialize providers once to trigger downloads into product-be/models
+    try:
+        from app.services.llm_providers.factory import create_chat_and_embeddings
+        chat, emb = create_chat_and_embeddings()
+        # Warm small calls to finalize files
+        _ = emb.embed(["init"])
+        _ = chat.generate([
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "ok"}
+        ], max_tokens=4, temperature=0.1)
+    except Exception as e:
+        # Defer failure to actual endpoints; we don't hard fail startup
+        print(f"[startup] Local model init warning: {e}")
 
 # Configure CORS
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")

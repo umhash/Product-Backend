@@ -10,8 +10,8 @@ import docx
 import pytesseract
 from PIL import Image
 import tiktoken
-from openai import OpenAI
 from sqlalchemy.orm import Session
+from app.services.llm_providers.factory import create_chat_and_embeddings
 
 from app.models.application import Application, ApplicationDocument
 from app.models.student import Student
@@ -24,13 +24,8 @@ class OfferLetterEmailService:
     """Service for generating offer letter request emails using LLM"""
     
     def __init__(self):
-        # Initialize OpenAI API key
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        if not self.api_key or self.api_key == "your-openai-api-key-here":
-            raise ValueError("OPENAI_API_KEY environment variable is required")
-        
-        # Initialize OpenAI client
-        self.openai_client = OpenAI(api_key=self.api_key)
+        # Initialize providers (env-driven; default OpenAI)
+        self.chat_llm, _ = create_chat_and_embeddings()
         
         # Initialize tokenizer for token counting
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -286,21 +281,18 @@ Generate the complete email including subject line, salutation, body, and signat
         return prompt
     
     def _generate_email_with_llm(self, prompt: str) -> str:
-        """Generate email content using OpenAI LLM"""
+        """Generate email content using configured LLM provider"""
         
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            email_content = self.chat_llm.generate(
                 messages=[
                     {"role": "system", "content": "You are a professional university admissions consultant who writes formal, persuasive emails to universities requesting offer letters for students."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=800,
-                temperature=0.3,  # Lower temperature for more consistent, professional output
-                top_p=0.9
-            )
-            
-            email_content = response.choices[0].message.content.strip()
+                temperature=0.3,
+                top_p=0.9,
+            ).strip()
             
             # Basic validation
             if not email_content or len(email_content) < 100:
