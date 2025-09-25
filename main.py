@@ -57,7 +57,7 @@ async def ensure_local_models():
         print(f"[startup] Local model init warning: {e}")
 
 # Configure CORS
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+allowed_origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
