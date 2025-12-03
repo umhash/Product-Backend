@@ -214,6 +214,7 @@ class UKProgramCreate(UKProgramBase):
     min_ielts_components: Optional[float] = None
     min_toefl_overall: Optional[float] = None
     min_pte_overall: Optional[float] = None
+    duolingo_min_score: Optional[float] = None
     min_gpa_4_scale: Optional[float] = None
     min_percentage: Optional[float] = None
     required_qualification: Optional[str] = None
@@ -222,6 +223,12 @@ class UKProgramCreate(UKProgramBase):
     duration_months: Optional[int] = None
     intake_months: Optional[List[int]] = None
     program_description: Optional[str] = None
+    moi_accepted: Optional[str] = None
+    initial_deposit_gbp: Optional[float] = None
+    scholarships: Optional[str] = None
+    study_gap_acceptable: Optional[str] = None
+    special_notes: Optional[str] = None
+    entry_requirements_text: Optional[str] = None
 
 
 class UKProgramResponse(UKProgramBase):
@@ -230,6 +237,7 @@ class UKProgramResponse(UKProgramBase):
     min_ielts_components: Optional[float]
     min_toefl_overall: Optional[float]
     min_pte_overall: Optional[float]
+    duolingo_min_score: Optional[float]
     min_gpa_4_scale: Optional[float]
     min_percentage: Optional[float]
     required_qualification: Optional[str]
@@ -238,6 +246,12 @@ class UKProgramResponse(UKProgramBase):
     duration_months: Optional[int]
     intake_months: Optional[List[int]]
     program_description: Optional[str]
+    moi_accepted: Optional[str]
+    initial_deposit_gbp: Optional[float]
+    scholarships: Optional[str]
+    study_gap_acceptable: Optional[str]
+    special_notes: Optional[str]
+    entry_requirements_text: Optional[str]
     is_active: bool
     created_at: datetime
 

@@ -7,29 +7,34 @@ from .document import ProgramDocumentResponse
 class ProgramBase(BaseModel):
     university_name: str
     program_name: str
-    program_level: str  # undergraduate, postgraduate
+    program_level: str
     field_of_study: str
     
-    # Entry requirements
     min_ielts_overall: Optional[float] = None
     min_ielts_components: Optional[float] = None
     min_toefl_overall: Optional[float] = None
     min_pte_overall: Optional[float] = None
+    duolingo_min_score: Optional[float] = None
     
-    # Academic requirements
     min_gpa_4_scale: Optional[float] = None
     min_percentage: Optional[float] = None
     required_qualification: Optional[str] = None
     
-    # Financial requirements
     tuition_fee_gbp: Optional[float] = None
     living_cost_gbp: Optional[float] = None
     
-    # Program details
     duration_months: Optional[int] = None
-    intake_months: Optional[List[int]] = None  # [1, 9] for Jan/Sep
+    intake_months: Optional[List[int]] = None
     city: str
     program_description: Optional[str] = None
+    
+    moi_accepted: Optional[str] = None
+    initial_deposit_gbp: Optional[float] = None
+    scholarships: Optional[str] = None
+    study_gap_acceptable: Optional[str] = None
+    special_notes: Optional[str] = None
+    entry_requirements_text: Optional[str] = None
+    
     is_active: bool = True
 
 
@@ -46,6 +51,7 @@ class ProgramUpdate(BaseModel):
     min_ielts_components: Optional[float] = None
     min_toefl_overall: Optional[float] = None
     min_pte_overall: Optional[float] = None
+    duolingo_min_score: Optional[float] = None
     min_gpa_4_scale: Optional[float] = None
     min_percentage: Optional[float] = None
     required_qualification: Optional[str] = None
@@ -55,6 +61,12 @@ class ProgramUpdate(BaseModel):
     intake_months: Optional[List[int]] = None
     city: Optional[str] = None
     program_description: Optional[str] = None
+    moi_accepted: Optional[str] = None
+    initial_deposit_gbp: Optional[float] = None
+    scholarships: Optional[str] = None
+    study_gap_acceptable: Optional[str] = None
+    special_notes: Optional[str] = None
+    entry_requirements_text: Optional[str] = None
     is_active: Optional[bool] = None
 
 

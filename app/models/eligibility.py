@@ -83,6 +83,7 @@ class UKProgram(Base):
     min_ielts_components = Column(Float, nullable=True)
     min_toefl_overall = Column(Float, nullable=True)
     min_pte_overall = Column(Float, nullable=True)
+    duolingo_min_score = Column(Float, nullable=True)
     
     # Academic requirements
     min_gpa_4_scale = Column(Float, nullable=True)
@@ -95,11 +96,17 @@ class UKProgram(Base):
     
     # Program details
     duration_months = Column(Integer, nullable=True)
-    intake_months = Column(JSON, nullable=True)  # [1, 9] for Jan/Sep
+    intake_months = Column(JSON, nullable=True)
     city = Column(String, nullable=False)
     program_description = Column(Text, nullable=True)
     
-    # Metadata
+    moi_accepted = Column(String, nullable=True)
+    initial_deposit_gbp = Column(Float, nullable=True)
+    scholarships = Column(Text, nullable=True)
+    study_gap_acceptable = Column(String, nullable=True)
+    special_notes = Column(Text, nullable=True)
+    entry_requirements_text = Column(Text, nullable=True)
+    
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     

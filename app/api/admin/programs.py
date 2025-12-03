@@ -204,6 +204,7 @@ async def download_programs_csv_template(
         "min_ielts_components",
         "min_toefl_overall",
         "min_pte_overall",
+        "duolingo_min_score",
         "min_gpa_4_scale",
         "min_percentage",
         "required_qualification",
@@ -213,6 +214,12 @@ async def download_programs_csv_template(
         "intake_months",
         "city",
         "program_description",
+        "moi_accepted",
+        "initial_deposit_gbp",
+        "scholarships",
+        "study_gap_acceptable",
+        "special_notes",
+        "entry_requirements_text",
         "is_active",
     ]
 
@@ -355,6 +362,7 @@ async def bulk_upload_programs(
                 "min_ielts_components": _parse_float(row.get("min_ielts_components")),
                 "min_toefl_overall": _parse_float(row.get("min_toefl_overall")),
                 "min_pte_overall": _parse_float(row.get("min_pte_overall")),
+                "duolingo_min_score": _parse_float(row.get("duolingo_min_score")),
                 "min_gpa_4_scale": _parse_float(row.get("min_gpa_4_scale")),
                 "min_percentage": _parse_float(row.get("min_percentage")),
                 "required_qualification": row.get("required_qualification") or None,
@@ -364,6 +372,12 @@ async def bulk_upload_programs(
                 "intake_months": _parse_int_list(row.get("intake_months")),
                 "city": row.get("city") or "",
                 "program_description": row.get("program_description") or None,
+                "moi_accepted": row.get("moi_accepted") or None,
+                "initial_deposit_gbp": _parse_float(row.get("initial_deposit_gbp")),
+                "scholarships": row.get("scholarships") or None,
+                "study_gap_acceptable": row.get("study_gap_acceptable") or None,
+                "special_notes": row.get("special_notes") or None,
+                "entry_requirements_text": row.get("entry_requirements_text") or None,
                 "is_active": _parse_bool(row.get("is_active"), True),
             }
 
