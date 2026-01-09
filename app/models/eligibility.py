@@ -69,37 +69,38 @@ class EligibilityAssessment(Base):
 
 
 class UKProgram(Base):
-    """Demo catalog of UK programs for suggestions"""
     __tablename__ = "uk_programs"
 
     id = Column(Integer, primary_key=True, index=True)
-    university_name = Column(String, nullable=False)
+    university_name = Column(String, nullable=False, index=True)
     program_name = Column(String, nullable=False)
-    program_level = Column(String, nullable=False)  # undergraduate, postgraduate
-    field_of_study = Column(String, nullable=False)
+    program_level = Column(String, nullable=False, index=True)
+    field_of_study = Column(String, nullable=False, index=True)
+    city = Column(String, nullable=False)
     
-    # Entry requirements
     min_ielts_overall = Column(Float, nullable=True)
     min_ielts_components = Column(Float, nullable=True)
     min_toefl_overall = Column(Float, nullable=True)
     min_pte_overall = Column(Float, nullable=True)
     duolingo_min_score = Column(Float, nullable=True)
     
-    # Academic requirements
     min_gpa_4_scale = Column(Float, nullable=True)
     min_percentage = Column(Float, nullable=True)
     required_qualification = Column(String, nullable=True)
     
-    # Financial requirements
+    tuition_fee_min_gbp = Column(Float, nullable=True)
+    tuition_fee_max_gbp = Column(Float, nullable=True)
     tuition_fee_gbp = Column(Float, nullable=True)
     living_cost_gbp = Column(Float, nullable=True)
     
-    # Program details
     duration_months = Column(Integer, nullable=True)
     intake_months = Column(JSON, nullable=True)
-    city = Column(String, nullable=False)
     program_description = Column(Text, nullable=True)
     
+    programs_available = Column(Text, nullable=True)
+    ug_entry_requirements = Column(Text, nullable=True)
+    pg_entry_requirements = Column(Text, nullable=True)
+    english_requirements_text = Column(Text, nullable=True)
     moi_accepted = Column(String, nullable=True)
     initial_deposit_gbp = Column(Float, nullable=True)
     scholarships = Column(Text, nullable=True)
@@ -110,7 +111,6 @@ class UKProgram(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Relationships
     documents = relationship("ProgramDocument", back_populates="program", cascade="all, delete-orphan")
     
     def __repr__(self):

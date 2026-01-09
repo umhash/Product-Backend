@@ -163,9 +163,11 @@ class SuggestedProgram(BaseModel):
     program_level: str
     field_of_study: str
     city: str
+    tuition_fee_min_gbp: Optional[float]
+    tuition_fee_max_gbp: Optional[float]
     tuition_fee_gbp: Optional[float]
-    match_score: float  # 0-100
-    tags: List[str]  # e.g., ["Meets IELTS", "Missing finance proof"]
+    match_score: float
+    tags: List[str]
     reasons: List[str]
 
 
@@ -218,11 +220,17 @@ class UKProgramCreate(UKProgramBase):
     min_gpa_4_scale: Optional[float] = None
     min_percentage: Optional[float] = None
     required_qualification: Optional[str] = None
+    tuition_fee_min_gbp: Optional[float] = None
+    tuition_fee_max_gbp: Optional[float] = None
     tuition_fee_gbp: Optional[float] = None
     living_cost_gbp: Optional[float] = None
     duration_months: Optional[int] = None
     intake_months: Optional[List[int]] = None
     program_description: Optional[str] = None
+    programs_available: Optional[str] = None
+    ug_entry_requirements: Optional[str] = None
+    pg_entry_requirements: Optional[str] = None
+    english_requirements_text: Optional[str] = None
     moi_accepted: Optional[str] = None
     initial_deposit_gbp: Optional[float] = None
     scholarships: Optional[str] = None
@@ -241,11 +249,17 @@ class UKProgramResponse(UKProgramBase):
     min_gpa_4_scale: Optional[float]
     min_percentage: Optional[float]
     required_qualification: Optional[str]
+    tuition_fee_min_gbp: Optional[float]
+    tuition_fee_max_gbp: Optional[float]
     tuition_fee_gbp: Optional[float]
     living_cost_gbp: Optional[float]
     duration_months: Optional[int]
     intake_months: Optional[List[int]]
     program_description: Optional[str]
+    programs_available: Optional[str]
+    ug_entry_requirements: Optional[str]
+    pg_entry_requirements: Optional[str]
+    english_requirements_text: Optional[str]
     moi_accepted: Optional[str]
     initial_deposit_gbp: Optional[float]
     scholarships: Optional[str]

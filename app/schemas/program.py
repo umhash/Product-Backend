@@ -20,6 +20,8 @@ class ProgramBase(BaseModel):
     min_percentage: Optional[float] = None
     required_qualification: Optional[str] = None
     
+    tuition_fee_min_gbp: Optional[float] = None
+    tuition_fee_max_gbp: Optional[float] = None
     tuition_fee_gbp: Optional[float] = None
     living_cost_gbp: Optional[float] = None
     
@@ -28,6 +30,10 @@ class ProgramBase(BaseModel):
     city: str
     program_description: Optional[str] = None
     
+    programs_available: Optional[str] = None
+    ug_entry_requirements: Optional[str] = None
+    pg_entry_requirements: Optional[str] = None
+    english_requirements_text: Optional[str] = None
     moi_accepted: Optional[str] = None
     initial_deposit_gbp: Optional[float] = None
     scholarships: Optional[str] = None
@@ -55,12 +61,18 @@ class ProgramUpdate(BaseModel):
     min_gpa_4_scale: Optional[float] = None
     min_percentage: Optional[float] = None
     required_qualification: Optional[str] = None
+    tuition_fee_min_gbp: Optional[float] = None
+    tuition_fee_max_gbp: Optional[float] = None
     tuition_fee_gbp: Optional[float] = None
     living_cost_gbp: Optional[float] = None
     duration_months: Optional[int] = None
     intake_months: Optional[List[int]] = None
     city: Optional[str] = None
     program_description: Optional[str] = None
+    programs_available: Optional[str] = None
+    ug_entry_requirements: Optional[str] = None
+    pg_entry_requirements: Optional[str] = None
+    english_requirements_text: Optional[str] = None
     moi_accepted: Optional[str] = None
     initial_deposit_gbp: Optional[float] = None
     scholarships: Optional[str] = None
